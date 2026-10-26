@@ -16,6 +16,16 @@ PROOF OMITTED
 THEOREM ArgumentOrder == ASSUME x = 1 PROVE B(x, 1)
 <1> HIDE DEF A, B
 <1> QED BY B11
+
+(* u occurs under [] in D, even though E itself is substitutive.            *)
+E(v) == v = 1
+D(u) == [](E(u))
+LEMMA D1 == D(1)
+PROOF OMITTED
+
+THEOREM NestedScope == ASSUME x = 1 PROVE D(x)
+<1> HIDE DEF D, E
+<1> QED BY D1
 ====
 stderr: status:failed
 nostderr: status:proved

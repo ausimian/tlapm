@@ -71,12 +71,15 @@ class compute_substitutivity_array = object (self: 'self)
             let hyp = E_t.get_val_from_id cx n in
             begin match hyp.core with
             | Defn ({core = Operator _} as op, _, _, _) ->
-                (* The array is indexed from the last parameter, as in
-                `indexed_args`. *)
+                (* An argument is in substitutive scope only if the
+                enclosing scope is and the operator is substitutive in that
+                position. The array is indexed from the last parameter, as
+                in `indexed_args`. *)
                 let n_args = List.length args in
                 List.iteri
                     (fun i arg ->
-                        let scope = get_substitutive_arg op (n_args - 1 - i) in
+                        let scope = scope
+                            && get_substitutive_arg op (n_args - 1 - i) in
                         let s = (scope, index, r) in
                         self#expr (s, cx) arg)
                     args
