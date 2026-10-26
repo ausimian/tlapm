@@ -33,6 +33,10 @@ THEOREM ExistsDiamond == ASSUME NEW c \in S, <>(x = c)
                          PROVE  \E t \in S : <>(x = t)
 OBVIOUS
 
+THEOREM TemporalOperatorInstance == ASSUME NEW TEMPORAL F(_), NEW c \in S, \A t \in S : F(t)
+                                    PROVE  F(c)
+OBVIOUS
+
 (* LS4 rejects identifiers longer than 31 characters, which bounds the      *)
 (* names that coalescing gives to atoms.                                    *)
 THEOREM Ptl == [](x \in Nat) /\ [](x = 0 => <>(x = 1)) => (x = 0 ~> x = 1)

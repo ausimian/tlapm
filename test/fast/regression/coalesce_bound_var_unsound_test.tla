@@ -54,6 +54,19 @@ THEOREM LambdaFormal == ASSUME Ap(LAMBDA y : <>(x = y), 1)
                         PROVE  Ap(LAMBDA y : <>(x = y), 2)
 <1> HIDE DEF Ap
 <1> QED BY ApDef
+
+(* A declared operator of non-constant level must keep its arguments.       *)
+THEOREM TemporalOperator == ASSUME NEW TEMPORAL F(_), NEW a \in S, NEW b \in S, F(a)
+                            PROVE  F(b)
+OBVIOUS
+
+THEOREM StateOperator == ASSUME NEW STATE P(_), NEW a \in S, NEW b \in S, P(a)
+                         PROVE  P(b)
+OBVIOUS
+
+THEOREM TemporalOperatorBinder == ASSUME NEW TEMPORAL F(_)
+                                  PROVE  (\E k \in S : F(k)) => (\A k \in S : F(k))
+OBVIOUS
 ====
 stderr: status:failed
 nostderr: status:proved
