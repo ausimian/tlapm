@@ -168,6 +168,17 @@ let prime_commuter =
          | _ -> super#expr scx e
   end
 
+(* [] and <> commute with a bounded quantifier only if its bounds are
+ * constant: [](\A t \in x : P) is not \A t \in x : []P when x is a state
+ * variable, because the set that t ranges over can change.
+ * *)
+let constant_bounds bs =
+  List.for_all
+    (fun (_, _, dom) -> match dom with
+      | Domain d -> (Expr.Levels.get_level d) = 0
+      | No_domain | Ditto -> true)
+    bs
+
 (* Box commuter:
   * Box should be computed over /\ and the two foralls
   * Box should be cancelled over constant expressions
@@ -183,8 +194,9 @@ let box_commuter =
       (* Conjunctions *)
       | Apply ({core = Internal Builtin.Conj}, _)
       (* Universal quantifiers *)
-      | Quant (Forall, _,_)
       | Tquant (Forall, _,_) ->
+          super#expr scx e
+      | Quant (Forall, bs, _) when constant_bounds bs ->
           super#expr scx e
       | _ -> box e
   end
@@ -204,8 +216,9 @@ let dia_commuter =
       (* Disjunctions *)
       | Apply ({core = Internal Builtin.Disj}, _)
       (* Existential quantifiers *)
-      | Quant (Exists, _,_)
       | Tquant (Exists, _,_) ->
+          super#expr scx e
+      | Quant (Exists, bs, _) when constant_bounds bs ->
           super#expr scx e
       | _ -> dia e
   end

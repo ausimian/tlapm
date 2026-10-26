@@ -67,6 +67,20 @@ OBVIOUS
 THEOREM TemporalOperatorBinder == ASSUME NEW TEMPORAL F(_)
                                   PROVE  (\E k \in S : F(k)) => (\A k \in S : F(k))
 OBVIOUS
+
+(* [] and <> must not move inside a quantifier whose bound is a state       *)
+(* variable: here x ranges over {1} and then {2}, with y = 1 and then 2.    *)
+THEOREM BoxStateBound == ASSUME [](\A t \in x : t \in S),
+                                \A t \in S : [](y = t) => [](y = t + 1),
+                                [](\A t \in x : y = t)
+                         PROVE  [](\A t \in x : y = t + 1)
+OBVIOUS
+
+THEOREM DiamondStateBound == ASSUME <>(\E t \in x : y = t),
+                                    \A t \in S : <>(y = t) => <>(y = t + 1),
+                                    [](\A t \in x : t \in S)
+                             PROVE  <>(\E t \in x : y = t + 1)
+OBVIOUS
 ====
 stderr: status:failed
 nostderr: status:proved
