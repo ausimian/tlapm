@@ -35,7 +35,10 @@ let crypthash scx cx e =
         Format.pp_print_flush fmt () ;
         Buffer.contents b
     in
-    "h" ^ shorter_string_to_hex s
+    (* 96 bits of the digest. Distinct terms that collide on a name are
+    identified by the backends, so 20 bits is too few; LS4 rejects
+    identifiers longer than 31 characters, so the full digest is too many. *)
+    "h" ^ String.sub (string_to_hex s) 0 24
 
 (* for using it with PLTL it is enough to have a trivial coalescing returning a
  * unique constant depending on all symbols in it, TODO make a smarter (according
@@ -96,16 +99,10 @@ let coalesce_apply cx expr =
     | _ -> assert false
 
 
-(* Coalescing of modal operators follows the paper. A main difference is that we
- * do not compute a set of bound rigid variables since all variables are
- * considered bound in TLA
+(* Coalescing of modal operators follows the paper: a modal expression is
+ * abstracted as an operator applied to its free rigid variables (see
+ * `vars_visitor` and `coalesce_rigid` below).
  *)
-module IxSet = Set.Make (
-    struct type t = expr
-    let compare e1 e2 = match (e1.core, e2.core) with
-        | (Ix n, Ix m) -> compare n m
-        | _ -> failwith "illegal type"
-end)
 
 
 let level_to_kind level =
@@ -191,46 +188,49 @@ let coalesce_primed_var cx index =
 
 
 let vars_visitor = object (self: 'self)
-    (* A visitor for accumulating free variables and free constants. *)
+    (* A visitor for accumulating the free rigid variables of an expression:
+    constants declared in the context, variables bound by quantifiers around
+    the expression, and formals of LAMBDAs around it (which the visitors
+    declare with kind `Unknown`). These are the variables that coalescing must
+    turn into arguments of the abstracting operator; without them,
+    `\E t : <>(x = t)` and `\A t : <>(x = t)` would abstract to the same
+    proposition.
+
+    The variables are returned as indices relative to the expression, in
+    order of first occurrence, so that the order does not depend on how the
+    binders around the expression are arranged.
+
+    State variables are not collected. A temporal formula depends on the
+    whole behavior, not on the current values of its variables, so it must
+    not be abstracted as a function of those values; state variables stay
+    part of the abstracted term itself.
+
+    Operator-shaped variables are not collected either: they stay part of
+    the abstracted term by name. Passing an operator as an argument would
+    distinguish the instances of `<>(x = F(0))` for different `F`, but the
+    SMT encoding cannot take operator arguments. A constant operator applied
+    to constants under a modality is cancelled before coalescing, so the
+    remaining gap needs a backend to instantiate an operator parameter.
+    *)
     inherit [int] Expr.Visit.iter_visible_hyp as super
 
-    val mutable vars = ref IxSet.empty
+    val mutable vars : int list = []
 
     method compute cx e =
-        let vars = ref IxSet.empty in
-        let max_bound_idx = 0 in
-        self#expr (max_bound_idx, cx) e;
-        IxSet.elements !vars
+        vars <- [];
+        self#expr (0, cx) e;
+        List.rev vars
 
     method expr ((max_bound_idx, cx) as scx) e =
         match e.core with
         | Ix n -> begin
             let hyp = get_val_from_id cx n in
             match hyp.core with
-            | Fresh _
-            | Flex _ ->
-                if (n > max_bound_idx) then
-                    begin
-                    let m = n - max_bound_idx in
-                    vars := IxSet.add (Ix m @@ e) !vars
-                    end
-            | Defn ({core = Operator (_, expr)}, _, Visible, _)
-                when
-                not ((Expr.Levels.get_level expr) = 0) ->
-                (* TODO: what about considering hidden nonconstant
-                operators as variables ?
-                Different operator applications could be to different variables
-                so there occurrences would need to be represented as different
-                variables.
-                *)
-                (* visit both `Hidden` and `Visible` definitions
-                The function `Backend.Prep.expand_defs` removes from the
-                sequent context visible definitions and pragma definitions
-                (both visible and hidden pragma definitions).)
-                *)
-                let scx = Expr.T.scx_front scx n in
-                super#expr scx expr
-            | _ -> super#expr scx e
+            | Fresh (_, Shape_expr, (Constant | Unknown), _)
+                    when n > max_bound_idx ->
+                let m = n - max_bound_idx in
+                if not (List.mem m vars) then vars <- m :: vars
+            | _ -> ()
             end
         | Lambda (ls, _) ->
             let max_bound_idx = max_bound_idx + (List.length ls) in
@@ -302,6 +302,38 @@ let compute_vars cx e =
     vars_visitor#compute cx e
 
 
+let coalesce_rigid cx e =
+    (* Abstract `e` as `h(v_1, ..., v_n)`, where `v_1, ..., v_n` are the free
+    rigid variables of `e` and `h` names `LAMBDA p_1, ..., p_n : e` with each
+    `v_i` replaced by `p_i`. Naming the lambda rather than `e` makes `h`
+    independent of what the variables are called, so `<>(x = i)` and
+    `<>(x = k)` abstract to `h(i)` and `h(k)` with the same `h`.
+    *)
+    match compute_vars cx e with
+    | [] -> coalesce cx e
+    | vars ->
+        let n = List.length vars in
+        let top = List.fold_left max 0 vars in
+        let rec position i k = function
+            | [] -> None
+            | v :: vs -> if v = i then Some k else position i (k + 1) vs in
+        (* Variable `i` maps to parameter `p_(k+1)` when it is the k-th
+        (0-based) variable, and every other index moves past the n
+        parameters. *)
+        let entry i = match position i 0 vars with
+            | Some k -> Ix (n - k) @@ e
+            | None -> Ix (i + n) @@ e in
+        let rec sub i =
+            if i > top then shift (top + n)
+            else scons (entry i) (sub (i + 1)) in
+        let body = app_expr (sub 1) e in
+        let params = List.mapi
+            (fun k _ -> (Printf.sprintf "p_%d" (k + 1) @@ e, Shape_expr))
+            vars in
+        let op = coalesce cx (Lambda (params, body) @@ e) in
+        Apply (op, List.map (fun v -> Ix v @@ e) vars) @@ e
+
+
 let coalesce_modal_visitor = object (self)
     inherit [unit] Expr.Visit.map_visible_hyp as super
 
@@ -322,13 +354,7 @@ let coalesce_modal_visitor = object (self)
                 | Builtin.Box _ | Builtin.Diamond
                 | Builtin.Leadsto | Builtin.ENABLED | Builtin.Cdot
                 | Builtin.UNCHANGED)}, args) ->
-            begin
-            let vars = compute_vars cx e in
-            let op = coalesce cx e in
-            match vars with
-            | [] -> op
-            | _ -> Apply (op, vars) @@ e
-            end
+            coalesce_rigid cx e
         | Apply ({core = Ix n} as index, args) ->
             let hyp = get_val_from_id cx n in
             begin match hyp.core with
