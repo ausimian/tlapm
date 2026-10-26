@@ -463,7 +463,8 @@ let rec localize body body_len iname niargs iargs not_complained inst local =
           in
           let prf = Omitted (Elsewhere (Util.get_locus mu)) @@ mu in
           let mu = Theorem (nm, sq, naxs, prf, prf_orig, summ) @@ mu in
-          localize (mu :: body) (body_len + 1) iname niargs iargs
+          (* a named theorem occupies two hypotheses (see [M_t.hyp_size]) *)
+          localize (mu :: body) (body_len + hyp_size mu) iname niargs iargs
             not_complained inst local mus
       | Mutate (`Hide, _) ->
           localize body body_len iname niargs iargs not_complained inst local
