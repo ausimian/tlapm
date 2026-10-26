@@ -1939,6 +1939,14 @@ let sequent_stats (sq: sequent) =
     n_hyp
 
 
+(* Marks the definition of a theorem that a parametric INSTANCE produced,
+   as in [I(x) == INSTANCE M]. Its body is a LAMBDA over the instance
+   arguments, and a citation [I(e)!Thm] applies it to [e]. *)
+let param_theorem: unit pfuncs =
+  Property.make "Module.Elab.param_theorem"
+let is_param_theorem x = Property.has x param_theorem
+
+
 let enabledaxioms: bool pfuncs =
   Property.make "Module.Elab.enabledaxioms"
 let has_enabledaxioms x = Property.has

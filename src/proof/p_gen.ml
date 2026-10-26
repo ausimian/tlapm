@@ -295,7 +295,34 @@ and gen_step (sq, inits, time_flag) stp =
         in
         (sq, stp :: inits, time_flag)
     | Use ({defs = []; facts = [f]}, _) ->
-        let fob = obligate ({sq with active = f} @@ stp) Ob_support in
+        (* [I(e)!Thm], where [I(x) == INSTANCE M] and [Thm] is a theorem of
+           [M], is an instance of a proved theorem: it needs no support
+           obligation, just as citing [Thm] by name does not. The arguments
+           must be constant: a theorem that holds for every constant need
+           not hold when a state-level expression replaces it. *)
+        let param_theorem_instance = match f.core with
+          | Apply ({core = Ix n}, args)
+              when n > 0 && n <= Deque.size sq.context ->
+              begin match Deque.nth ~backwards:true sq.context (n - 1) with
+              | Some ({core = Defn (
+                  {core = Operator (_, {core = Lambda (vs, _)})},
+                  Proof _, _, _)} as h) ->
+                  Expr.T.is_param_theorem h
+                  && List.length vs = List.length args
+                  && List.for_all (fun a ->
+                       Expr.Levels.get_level
+                         (Expr.Levels.compute_level sq.context a) = 0) args
+              | _ -> false
+              end
+          | _ -> false
+        in
+        let fob =
+          if param_theorem_instance then
+            obligate ({sq with active = Internal Builtin.TRUE @@ f} @@ stp)
+              Ob_support
+          else
+            obligate ({sq with active = f} @@ stp) Ob_support
+        in
         (* since we might be in a Now scope but the fact from an earlier Always
          * scope, we must search for it in the context and take the right scope
          * *)
@@ -305,6 +332,10 @@ and gen_step (sq, inits, time_flag) stp =
             begin match Deque.nth ~backwards:true sq.context (n - 1) with
             | Some {core = (Fact (_,_,tm) | Defn (_,Proof tm,_,_))} -> tm
             | e -> Always (* all other options are with Always scope*) end
+        | Apply ({core = Ix n}, _) when param_theorem_instance ->
+            begin match Deque.nth ~backwards:true sq.context (n - 1) with
+            | Some {core = Defn (_, Proof tm, _, _)} -> tm
+            | _ -> Always end
         | _ -> time_flag (* the rest are expressions which get the current scope *) in
         let stp = assign stp Props.obs [fob] in
         let sq = {context = Deque.snoc sq.context (Fact (f, Visible, tm) @@ f);

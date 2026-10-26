@@ -418,6 +418,9 @@ module T: sig
 
   val sequent_stats : sequent -> int
 
+  val param_theorem : unit pfuncs
+  val is_param_theorem : 'a Property.wrapped -> bool
+
   val enabledaxioms : bool pfuncs
   val has_enabledaxioms : 'a Property.wrapped -> bool
   val get_enabledaxioms : 'a Property.wrapped -> bool

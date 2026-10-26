@@ -53,8 +53,13 @@ let localize_axioms body =
                       let h = app_hyp (shift n) h in
                       let sq = app_sequent (shift 1) sq in
                       let sq = { sq with context = Deque.cons h sq.context } in
+                      (* the theorem now depends on an axiom of the
+                         instantiated module, so a citation of it must not
+                         be trusted as an instance of a proved theorem *)
                       let mu =
-                        Theorem (nm, sq, naxs + 1, prf, prf_orig, summ) @@ mu
+                        Property.remove
+                          (Theorem (nm, sq, naxs + 1, prf, prf_orig, summ) @@ mu)
+                          Expr.T.param_theorem
                       in
                       insert_ax (mu :: rinits)
                                 (if nm = None then n + 1 else n + 2)
@@ -447,14 +452,6 @@ let rec localize body body_len iname niargs iargs not_complained inst local =
           let nm = Option.map (tweak iname) nm in
           let e = exprify_sequent sq @@ mu in
           let e = app_expr (resub_for body_len niargs iargs inst) e in
-          if niargs > 0 && !not_complained then begin
-            Util.eprintf ~at:inst ~prefix:"Warning: "
-              "%s@\n%s@\n(%s)"
-              "Instancing produces parametric theorems."
-              "Such theorems will be forcibly hidden and cannot be cited."
-              "This warning appears at-most once per INSTANCE declaration.";
-            not_complained := false;
-          end;
           let e = lambdify e inst niargs in
           let sq =
             match e.core with
@@ -463,6 +460,15 @@ let rec localize body body_len iname niargs iargs not_complained inst local =
           in
           let prf = Omitted (Elsewhere (Util.get_locus mu)) @@ mu in
           let mu = Theorem (nm, sq, naxs, prf, prf_orig, summ) @@ mu in
+          (* A parametric theorem is a LAMBDA over the instance arguments;
+             mark it so that a citation [I(e)!Thm] is accepted as an instance
+             of a proved theorem (see [Proof.Gen.gen_step]), unless it
+             already depends on axioms of a module instantiated further in
+             (naxs > 0). *)
+          let mu =
+            if niargs > 0 && naxs = 0 then assign mu Expr.T.param_theorem ()
+            else mu
+          in
           (* a named theorem occupies two hypotheses (see [M_t.hyp_size]) *)
           localize (mu :: body) (body_len + hyp_size mu) iname niargs iargs
             not_complained inst local mus
