@@ -933,6 +933,8 @@ module SubstOp: sig
 
     val compute_subst:
         ctx -> expr -> expr
+    val operator_args_leibniz:
+        ?formals_leibniz:bool -> ctx -> defn -> expr list -> bool
 end
 
 

@@ -25,6 +25,12 @@ let make_lambda_hyps params =
     hyps
 
 
+(* Set to `operator_args_leibniz` below, which needs this class. *)
+let operator_args_leibniz_ref :
+        (formals_leibniz:bool -> ctx -> defn -> expr list -> bool) ref =
+    ref (fun ~formals_leibniz:_ _ _ _ -> false)
+
+
 class compute_substitutivity_array = object (self: 'self)
     inherit [bool * int * bool ref] E_visit.iter as super
 
@@ -72,17 +78,30 @@ class compute_substitutivity_array = object (self: 'self)
             begin match hyp.core with
             | Defn ({core = Operator _} as op, _, _, _) ->
                 (* An argument is in substitutive scope only if the
-                enclosing scope is and the operator is substitutive in that
-                position. The array is indexed from the last parameter, as
-                in `indexed_args`. *)
+                enclosing scope is, the operator's actuals are Leibniz, and
+                the operator is substitutive in that position. The array is
+                indexed from the last parameter, as in `indexed_args`.
+
+                The array being computed is conditional on the operator
+                parameters of the definition being Leibniz, since each
+                application of the definition checks its actuals; so those
+                parameters count as Leibniz here. *)
                 let n_args = List.length args in
+                let leibniz = !operator_args_leibniz_ref
+                    ~formals_leibniz:true cx op args in
                 List.iteri
                     (fun i arg ->
-                        let scope = scope
+                        let scope = scope && leibniz
                             && get_substitutive_arg op (n_args - 1 - i) in
                         let s = (scope, index, r) in
                         self#expr (s, cx) arg)
                     args
+            | Fresh (_, Shape_op _, (State | Action | Temporal), _) ->
+                (* A declared operator of non-constant level may prime its
+                arguments or apply ENABLED or a temporal operator to them,
+                so they are not in substitutive scope. *)
+                let s = (false, index, r) in
+                List.iter (fun arg -> self#expr (s, cx) arg) args
             | _ -> super#expr scx e
             end
         | Tquant (_, ls, _) ->
@@ -142,6 +161,56 @@ end
 let make_array cx e =
     let visitor = new compute_substitutivity_array in
     visitor#compute cx e
+
+
+let all_true arr = Array.for_all (fun b -> b) arr
+
+
+let is_leibniz_operator ~formals_leibniz cx arg =
+    (* Whether `arg`, passed as an operator argument, is substitutive in all
+    of its own arguments. A `LAMBDA` is if no formal occurs under a prime or
+    a modal operator; a defined operator is if its substitutivity array says
+    so; a declared operator is only if it is `CONSTANT`, or, when
+    `formals_leibniz` holds, an operator parameter of the definition being
+    analyzed; a built-in operator is unless it is a prime, `ENABLED`,
+    `UNCHANGED`, `\cdot` or a temporal operator. Anything else is treated
+    as not Leibniz.
+    *)
+    match arg.core with
+    | Lambda _ -> all_true (make_array cx arg)
+    | Internal (Builtin.Prime | StrongPrime | ENABLED | Cdot | UNCHANGED
+            | Box _ | Diamond | Leadsto | Actplus) -> false
+    | Internal _ -> true
+    | Ix n -> begin
+        match (E_t.get_val_from_id cx n).core with
+        | Fresh (_, Shape_op _, Constant, _) -> true
+        | Fresh (_, Shape_op _, Unknown, _) -> formals_leibniz
+        | Defn ({core = Operator _} as op, _, _, _) ->
+            has_substitutive op && all_true (get_substitutive op)
+        | _ -> false
+        end
+    | _ -> false
+
+
+let operator_args_leibniz ?(formals_leibniz = false) cx op args =
+    (* Whether every operator argument in the application of the defined
+    operator `op` to `args` is Leibniz. The substitutivity array of a
+    definition such as `Ap(F(_), a) == F(a)` is computed as if `F` were
+    Leibniz, so it holds for an application only when this does: with
+    `LAMBDA y : [](x = y)` for `F`, `Ap(F, x)` is not substitutive in `x`.
+    *)
+    match op.core with
+    | Operator (_, {core = Lambda (params, _)})
+            when List.length params = List.length args ->
+        List.for_all2
+            (fun (_, shp) arg -> match shp with
+                | Shape_op _ -> is_leibniz_operator ~formals_leibniz cx arg
+                | Shape_expr -> true)
+            params args
+    | _ -> true
+
+let () = operator_args_leibniz_ref :=
+    fun ~formals_leibniz -> operator_args_leibniz ~formals_leibniz
 
 
 let shape_to_arity shp =
