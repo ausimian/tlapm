@@ -50,6 +50,16 @@ let visitor = object (self : 'self)
         ((closure4, not is_box), cx) e2
         in
         closure := !closure1 && !closure2 && !closure3 && !closure4
+    (* quantifiers over rigid variables commute with [] and <> (the Barcan
+       formulas), so a quantified formula is closed when its body is and
+       its domains are constant *)
+    | Quant (_, bs, _) ->
+        let constant_domain (_, _, dom) = match dom with
+          | Domain d -> E_constness.is_const d
+          | No_domain | Ditto -> true
+        in
+        if List.for_all constant_domain bs then super#expr scx oe
+        else closure := false
     (* lists *)
     | List (_, ls) ->
         let cls = ref !closure in
