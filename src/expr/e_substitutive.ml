@@ -169,8 +169,8 @@ let all_true arr = Array.for_all (fun b -> b) arr
 let is_leibniz_operator ~formals_leibniz cx arg =
     (* Whether `arg`, passed as an operator argument, is substitutive in all
     of its own arguments. A `LAMBDA` is if no formal occurs under a prime or
-    a modal operator; a defined operator is if its substitutivity array says
-    so; a declared operator is only if it is `CONSTANT`, or, when
+    a modal operator; a defined operator is if it has no operator parameters
+    and its substitutivity array says so; a declared operator is only if it is `CONSTANT`, or, when
     `formals_leibniz` holds, an operator parameter of the definition being
     analyzed; a built-in operator is unless it is a prime, `ENABLED`,
     `UNCHANGED`, `\cdot` or a temporal operator. Anything else is treated
@@ -185,8 +185,21 @@ let is_leibniz_operator ~formals_leibniz cx arg =
         match (E_t.get_val_from_id cx n).core with
         | Fresh (_, Shape_op _, Constant, _) -> true
         | Fresh (_, Shape_op _, Unknown, _) -> formals_leibniz
-        | Defn ({core = Operator _} as op, _, _, _) ->
-            has_substitutive op && all_true (get_substitutive op)
+        | Defn ({core = Operator (_, body)} as op, _, _, _) ->
+            (* the array of a definition with operator parameters assumes
+               that its own operator arguments are Leibniz, which nothing
+               checks where it is passed on as an operator argument *)
+            let higher_order = match body.core with
+              | Lambda (params, _) ->
+                  List.exists
+                    (fun (_, shp) -> match shp with
+                      | Shape_op _ -> true
+                      | Shape_expr -> false)
+                    params
+              | _ -> false
+            in
+            not higher_order
+            && has_substitutive op && all_true (get_substitutive op)
         | _ -> false
         end
     | _ -> false
