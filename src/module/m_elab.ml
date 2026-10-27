@@ -1325,3 +1325,36 @@ let rec normalize mcx cx m =
   let m = { m.core with defdepth = Deque.size gencx } @@ m in
   let mcx = StringMap.add m.core.name.core m mcx in
   (mcx, m, summ)
+
+
+let%test_module _ = (module struct
+  let hint = Util.locate "" Loc.unknown
+
+  (* Localize, through the parametric instance [I(x) == INSTANCE M], the
+     theorem [THEOREM T == ASSUME TRUE PROVE TRUE] that already depends on
+     [naxs] axioms, and return whether it is marked as citable. *)
+  let marked naxs =
+    let inst = { inst_args = ["x" @@ hint]; inst_mod = "M"; inst_sub = [] }
+      @@ hint in
+    let sq = {
+      context = Deque.of_list
+        [Fact (Internal Builtin.TRUE @@ hint, Visible, NotSet) @@ hint];
+      active = Internal Builtin.TRUE @@ hint }
+    in
+    let prf = Omitted Explicit @@ hint in
+    let summ = { sum_total = 0; sum_absent = (0, []);
+                 sum_omitted = (0, []); sum_suppressed = (0, []) } in
+    let mu = Theorem (Some ("T" @@ hint), sq, naxs, prf, prf, summ) @@ hint in
+    match localize [] 0 ("I" @@ hint) 1 [Ix 1 @@ hint] (ref true) inst Export
+            [mu] with
+    | [mu] -> Expr.T.is_param_theorem mu
+    | _ -> assert false
+
+  (* A theorem of a module that instantiates a module with an AXIOM
+     depends on the axiom (naxs > 0), and the hypothesis that records this
+     is lost when the theorem is exposed, so a parametric instance must not
+     mark it as citable. A parametric instance of such a module fails
+     today with "naxs > #cx", so this calls [localize] directly. *)
+  let%test "axiom-dependent theorem of a nested instance is not citable" =
+    marked 0 && not (marked 1)
+end)
