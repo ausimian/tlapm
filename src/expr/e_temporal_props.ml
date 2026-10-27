@@ -10,6 +10,18 @@ open E_visit
 module B = Builtin
 
 
+(* Whether the value of [e] is the same in every state. [E_constness.is_const]
+   misses some constant applications, such as an equality of constants. *)
+let rec value_constant e =
+  E_constness.is_const e ||
+  match e.core with
+  | Internal (B.TRUE | B.FALSE) -> true
+  | Apply ({core = Internal (B.Eq | B.Neq | B.Neg | B.Conj | B.Disj
+                            | B.Implies | B.Equiv)}, args) ->
+      List.for_all value_constant args
+  | _ -> false
+
+
 let visitor = object (self : 'self)
   inherit [bool ref * bool] iter as super
 
@@ -66,9 +78,11 @@ let visitor = object (self : 'self)
         let f e = let () = self#expr ((cls, is_box), cx) e in
         !cls in
         closure := (List.for_all f ls)
-    (* decomposing formulas for confirming all are constants *)
+    (* any other application, such as an equality, a set membership or a
+       defined operator, need not keep its value over time even when its
+       arguments are closed, so it is closed only if its value is constant *)
     | Apply _ ->
-        super#expr scx oe
+        if not (value_constant oe) then closure := false
     (* sequents should be converted to implications for computing is_box *)
     | Sequent sq ->
         (* let closure1 = ref true in
