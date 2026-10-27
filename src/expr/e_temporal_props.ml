@@ -83,14 +83,24 @@ let visitor = object (self : 'self)
        arguments are closed, so it is closed only if its value is constant *)
     | Apply _ ->
         if not (value_constant oe) then closure := false
-    (* sequents should be converted to implications for computing is_box *)
+    (* a sequent is the implication from its hypotheses to its conclusion:
+       facts are checked in the opposite polarity, and a declaration is
+       closed only if it introduces a constant over a constant domain *)
     | Sequent sq ->
-        (* let closure1 = ref true in
-        let closure2 = ref true in
-        let _ = self#hyps ((closure1, not is_box), cx) sq.context in
-        let () = self#expr ((closure2, is_box), cx) sq.active in
-        closure := !closure1 && !closure2 *)
-        self#expr ((closure, is_box), cx) sq.active
+        let rec spin cx hs = match Deque.front hs with
+          | None -> self#expr ((closure, is_box), cx) sq.active
+          | Some (h, hs) ->
+              begin match h.core with
+              | Fact (e, _, _) -> self#expr ((closure, not is_box), cx) e
+              | Fresh (_, _, Constant, Unbounded) -> ()
+              | Fresh (_, _, Constant, Bounded (d, _)) ->
+                  if not (E_constness.is_const d) then closure := false
+              | Fresh _ | FreshTuply _ | Flex _ -> closure := false
+              | Defn _ -> ()
+              end;
+              if !closure then spin (snd (adj ((closure, is_box), cx) h)) hs
+        in
+        spin cx sq.context
     (* unexpended temporal operators *)
     | f ->
         closure := false
