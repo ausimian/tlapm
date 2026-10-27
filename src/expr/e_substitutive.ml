@@ -67,6 +67,8 @@ class compute_substitutivity_array = object (self: 'self)
             let s = (scope, index, r) in
             self#expr (s, cx) expr
         | Sub (_, e1, e2)
+        | Tsub (_, e1, e2)
+        | Fair (_, e1, e2)
         | Apply ({core=Internal (Builtin.Leadsto | Actplus | Cdot)},
                 [e1; e2]) ->
             let scope = false in
