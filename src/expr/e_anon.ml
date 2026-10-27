@@ -122,6 +122,8 @@ class anon_sg = object (self: 'self)
                             "Operator \"%s\" not found" pfx);
                     failwith "Expr.Anon: 1INST"
                 | [] ->
+                    Util.eprintf ~at:e
+                        "Operator \"%s\" not found" pfx;
                     Errors.set
                         e (Printf.sprintf
                             "Operator \"%s\" not found" pfx);
