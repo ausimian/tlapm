@@ -28,6 +28,26 @@ let visitor = object (self : 'self)
   method expr ((closure, is_box), cx as scx) oe =
     if (!closure = false) then ()
     else match oe.core with
+    (* a sequent is the implication from its hypotheses to its conclusion:
+       facts are checked in the opposite polarity, and a declaration is
+       closed only if it introduces a constant over a constant domain. It
+       comes before the is_const case, which treats a bounded constant
+       declaration as constant whatever its domain. *)
+    | Sequent sq ->
+        let rec spin cx hs = match Deque.front hs with
+          | None -> self#expr ((closure, is_box), cx) sq.active
+          | Some (h, hs) ->
+              begin match h.core with
+              | Fact (e, _, _) -> self#expr ((closure, not is_box), cx) e
+              | Fresh (_, _, Constant, Unbounded) -> ()
+              | Fresh (_, _, Constant, Bounded (d, _)) ->
+                  if not (E_constness.is_const d) then closure := false
+              | Fresh _ | FreshTuply _ | Flex _ -> closure := false
+              | Defn _ -> ()
+              end;
+              if !closure then spin (snd (adj ((closure, is_box), cx) h)) hs
+        in
+        spin cx sq.context
     (* constant expressions are closed *)
     (* temporal declarations are closed as well *)
     | _ when (E_constness.is_const oe) -> () (* closed if constant *)
@@ -83,24 +103,6 @@ let visitor = object (self : 'self)
        arguments are closed, so it is closed only if its value is constant *)
     | Apply _ ->
         if not (value_constant oe) then closure := false
-    (* a sequent is the implication from its hypotheses to its conclusion:
-       facts are checked in the opposite polarity, and a declaration is
-       closed only if it introduces a constant over a constant domain *)
-    | Sequent sq ->
-        let rec spin cx hs = match Deque.front hs with
-          | None -> self#expr ((closure, is_box), cx) sq.active
-          | Some (h, hs) ->
-              begin match h.core with
-              | Fact (e, _, _) -> self#expr ((closure, not is_box), cx) e
-              | Fresh (_, _, Constant, Unbounded) -> ()
-              | Fresh (_, _, Constant, Bounded (d, _)) ->
-                  if not (E_constness.is_const d) then closure := false
-              | Fresh _ | FreshTuply _ | Flex _ -> closure := false
-              | Defn _ -> ()
-              end;
-              if !closure then spin (snd (adj ((closure, is_box), cx) h)) hs
-        in
-        spin cx sq.context
     (* unexpended temporal operators *)
     | f ->
         closure := false
