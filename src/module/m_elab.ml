@@ -547,24 +547,35 @@ let anon = object (self : 'self)
 
   val mutable __mcx : modctx = StringMap.empty
 
+  (* Names of the theorems that an INSTANCE inside a proof or a LET has
+     dropped (see [defns]), to explain why citing one fails. It is only
+     consulted for a name that does not resolve, and it is emptied for
+     each module unit, so it covers the proof that made the instance. *)
+  val mutable __uncitable : StringSet.t = StringSet.empty
+
   method mexpr mcx scx e =
     __mcx <- mcx ;
+    __uncitable <- StringSet.empty ;
     self#expr scx e
 
   method mproof mcx scx prf =
     __mcx <- mcx ;
+    __uncitable <- StringSet.empty ;
     self#proof scx prf
 
   method musable mcx scx us =
     __mcx <- mcx ;
+    __uncitable <- StringSet.empty ;
     self#usable scx us
 
   method mhyp mcx scx hyp =
     __mcx <- mcx ;
+    __uncitable <- StringSet.empty ;
     self#hyp scx hyp
 
   method msequent mcx scx sq =
     __mcx <- mcx ;
+    __uncitable <- StringSet.empty ;
     self#sequent scx sq
 
   method defns scx dfs =
@@ -582,6 +593,11 @@ let anon = object (self : 'self)
           | mu :: mus ->
               begin match mu.core with
               | Definition (df, _, _, _) -> make_defs (df :: sofar) mus
+              | Theorem (Some nm, _, _, _, _, _) ->
+                  (* only definitions can be added here, so the theorem
+                     is dropped and cannot be cited *)
+                  __uncitable <- StringSet.add nm.core __uncitable;
+                  drop sofar mu mus
               | Constants _
               | Recursives _
               | Variables _
@@ -590,15 +606,49 @@ let anon = object (self : 'self)
               | Submod _
               | Mutate _
               | Anoninst _ ->
-                let mu_hyps = M_t.hyps_of_modunit mu in
-                let n_hyps = List.length mu_hyps in
-                let (_, mus) = M_subst.app_modunits (shift (-n_hyps)) mus in
-                make_defs sofar mus
+                drop sofar mu mus
               end
+        and drop sofar mu mus =
+          let mu_hyps = M_t.hyps_of_modunit mu in
+          let n_hyps = List.length mu_hyps in
+          let (_, mus) = M_subst.app_modunits (shift (-n_hyps)) mus in
+          make_defs sofar mus
         in
         self#defns scx (make_defs [] submus @ dfs)
     | _ ->
         super#defns scx dfs
+
+  method expr scx e =
+    match e.core with
+    | Bang ({core = Opaque op | Apply ({core = Opaque op}, _)}, sels)
+        when not (StringSet.is_empty __uncitable) ->
+        (* the names that [Expr.Anon] tries for [op!l1!l2...] *)
+        let rec names pfx = function
+          | Sel_lab (l, _) :: sels ->
+              let nm = pfx ^ "!" ^ l in
+              nm :: names nm sels
+          | _ -> []
+        in
+        let names = op :: names op sels in
+        let bound nm =
+          Option.is_some
+            (Deque.find ~backwards:true (snd scx) (Expr.Anon.hyp_is_named nm))
+        in
+        begin match List.find_opt (fun nm -> StringSet.mem nm __uncitable) names with
+        | Some nm when not (List.exists bound names) ->
+            let msg = Printf.sprintf
+              "Theorem \"%s\" cannot be cited: an INSTANCE inside a proof \
+               or a LET keeps only the definitions of the instantiated \
+               module. Instantiate the module at module level to cite \
+               its theorems." nm
+            in
+            Util.eprintf ~at:e "%s" msg;
+            Errors.set e msg;
+            failwith "Module.Elab.anon#expr"
+        | _ -> super#expr scx e
+        end
+    | _ ->
+        super#expr scx e
 end
 
 (******************************************************************************)
