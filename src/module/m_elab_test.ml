@@ -32,13 +32,31 @@ let%test_module _ = (module struct
     in
     Expr.T.is_param_theorem (List.find theorem mule.Property.core.M_t.body)
 
+  (* The theorem [nm] of [mule]: the context and active part of its
+     sequent. *)
+  let theorem mule nm =
+    let find mu = match mu.Property.core with
+      | M_t.Theorem (Some h, sq, _, _, _, _) when h.core = nm -> Some sq
+      | _ -> None
+    in
+    List.find_map find mule.Property.core.M_t.body
+
+  (* Whether [e] is a LAMBDA whose body is a sequent with [n] hypotheses
+     before the original theorem. *)
+  let lambda_hyps e n =
+    match e.Property.core with
+    | Expr.T.Lambda (_, {core = Expr.T.Sequent sq}) ->
+        Deque.size sq.context >= n
+    | _ -> false
+
   (* A theorem stated after an AXIOM of a parametric instance depends on
-     the axiom, which is dropped when the theorem is exposed, so it must
-     not be marked as citable: trusting I(1)!T would prove 1 = 0. A
-     theorem stated before the axiom does not depend on it and stays
-     marked. Citing either fails today with "Expr.Levels: ARITY", so this
-     checks the marks themselves. *)
-  let%test "axiom-dependent theorem of a parametric instance is not citable" =
+     the axiom. The axiom becomes a hypothesis inside the theorem's LAMBDA,
+     applied to the instance parameters, so the theorem stays marked as
+     citable: citing I(1)!T gives ASSUME 1 = 0 PROVE 1 = 0, not 1 = 0. The
+     sequent outside the LAMBDA gets no hypothesis: exposing a theorem drops
+     the hypotheses counted in [naxs], which would drop the axiom. A
+     theorem stated before the axiom does not depend on it. *)
+  let%test "axiom-dependent theorem of a parametric instance keeps the axiom" =
     let mule = elaborate "Outer" {|
 ---- MODULE Outer ----
 ---- MODULE Ax ----
@@ -50,5 +68,7 @@ THEOREM T == k = 0
 I(x) == INSTANCE Ax WITH k <- x
 ====
 |} in
-    marked mule "I!Pre" && not (marked mule "I!T")
+    let t = Option.get (theorem mule "I!T") in
+    marked mule "I!Pre" && marked mule "I!T"
+    && Deque.null t.Expr.T.context && lambda_hyps t.Expr.T.active 1
 end)

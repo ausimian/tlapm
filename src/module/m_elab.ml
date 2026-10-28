@@ -25,21 +25,35 @@ open M_t
 (******************************************************************************)
 
 
-let localize_axioms body =
+let localize_axioms niargs body =
   let rec spin prefix = function
     | [] -> List.rev prefix
     | mu :: mus ->
         begin match mu.core with
-        | Axiom (nm, e) ->
+        | Axiom (nm, ax) ->
+            (* The axiom applied to the instance parameters, as a hypothesis
+               inside the LAMBDA of a parametric theorem that follows it
+               after [n] hypotheses (see [insert_ax]). *)
+            let param_ax n =
+              match nm, ax.core with
+              | Some _, _ ->
+                  let iargs =
+                    List.init niargs (fun k -> Ix (niargs - k) @@ mu) in
+                  Apply (Ix (2 + n + niargs) @@ mu, iargs) @@ mu
+              | None, Lambda (_, b) ->
+                  app_expr (bumpn niargs (shift (1 + n))) b
+              | None, _ ->
+                  Errors.bug ~at:mu "Module.Elab.localize_axioms"
+            in
             let (prefix, e) =
                 (* [NOTE] e is shifted by 1 and moved into mus, then
                  * mus is shifted by -1 before spinning *)
               match nm with
               | None ->
-                  (prefix, app_expr (shift 1) e)
+                  (prefix, app_expr (shift 1) ax)
               | Some nm ->
                   ((Definition
-                      (Operator (nm, e) @@ mu, Proof Always, Visible, Export)
+                      (Operator (nm, ax) @@ mu, Proof Always, Visible, Export)
                     @@ mu)
                    :: prefix,
                    Ix 2 @@ mu)
@@ -49,6 +63,38 @@ let localize_axioms body =
               | [] -> List.rev rinits
               | mu :: mus ->
                   begin match mu.core with
+                  | Theorem (nm, ({context; active = {core = Lambda (ivs, b)}}
+                                  as sq), naxs, prf, prf_orig, summ)
+                    when niargs > 0 && Deque.null context
+                         && List.length ivs = niargs ->
+                      (* A theorem of a parametric instance is
+                         [LAMBDA x: Thm(x)], and the axiom is a LAMBDA too.
+                         As a hypothesis of the theorem the axiom would be
+                         an unapplied operator, so put it inside the
+                         LAMBDA, applied to the parameters:
+                         [LAMBDA x: ASSUME Ax(x) PROVE Thm(x)]. A citation
+                         [I(e)!Thm] then carries [Ax(e)] as a hypothesis,
+                         so the theorem stays citable. It is not counted in
+                         [naxs]: exposing a theorem drops its first [naxs]
+                         hypotheses (see [M_t.hyps_of_modunit]). *)
+                      let inner = match b.core with
+                        | Sequent sq -> sq
+                        | _ -> { context = Deque.empty; active = b }
+                      in
+                      let inner = app_sequent (shift 1) inner in
+                      let hx = Fact (param_ax n, Visible, Always) @@ mu in
+                      let inner =
+                        { inner with context = Deque.cons hx inner.context }
+                      in
+                      let active =
+                        Lambda (ivs, Sequent inner @@ b) @@ sq.active in
+                      let mu =
+                        Theorem (nm, { sq with active }, naxs, prf, prf_orig,
+                                 summ) @@ mu
+                      in
+                      insert_ax (mu :: rinits)
+                                (if nm = None then n + 1 else n + 2)
+                                mus
                   | Theorem (nm, sq, naxs, prf,prf_orig, summ) ->
                       let h = app_hyp (shift n) h in
                       let sq = app_sequent (shift 1) sq in
@@ -440,7 +486,8 @@ let rec localize body body_len iname niargs iargs not_complained inst local =
             Errors.warn ~at:inst
               "%s\n%s@\n(%s)"
               "Instancing produces parametric axioms."
-              "Such axioms will be forcibly hidden and cannot be cited."
+              "They are not assumed: a theorem of the instance that \
+               depends on them has them as hypotheses."
               "This warning appears at-most once per INSTANCE declaration.";
             not_complained := false;
           end;
@@ -541,7 +588,7 @@ let instantiate
     let not_complained = ref true in
     let body = localize [] 0 iname niargs iargs not_complained inst local body
     in
-    localize_axioms body
+    localize_axioms niargs body
 
 
 (******************************************************************************)
