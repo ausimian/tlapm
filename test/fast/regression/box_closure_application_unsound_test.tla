@@ -5,9 +5,12 @@
 (* true afterwards, ([]p) = FALSE holds only at the start.                 *)
 EXTENDS Naturals, TLAPS
 
-VARIABLE p
+VARIABLES p, q
 
 Not(b) == ~b
+NotWrap(b) == Not(b)
+Impl(A, B) == A => B
+Eq(A, B) == A = B
 
 THEOREM BoxEq ==
   ASSUME ([]p) = FALSE
@@ -29,6 +32,24 @@ THEOREM QuantNot ==
   ASSUME Not(\A i \in Nat: []p)
   PROVE  [](Not(\A i \in Nat: []p))
 <1> HIDE DEF Not
+<1> QED BY PTL
+
+THEOREM WrappedNot ==
+  ASSUME NotWrap([]p)
+  PROVE  [](NotWrap([]p))
+<1> HIDE DEF NotWrap, Not
+<1> QED BY PTL
+
+THEOREM DefinedImplication ==
+  ASSUME Impl([]p, []q)
+  PROVE  [](Impl([]p, []q))
+<1> HIDE DEF Impl
+<1> QED BY PTL
+
+THEOREM DefinedEquality ==
+  ASSUME Eq([]p, FALSE)
+  PROVE  [](Eq([]p, FALSE))
+<1> HIDE DEF Eq
 <1> QED BY PTL
 ====
 stderr: status:failed

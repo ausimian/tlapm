@@ -22,8 +22,49 @@ let rec value_constant e =
   | _ -> false
 
 
+let constness = object
+  inherit E_constness.const_visitor
+end
+
+(* The body of the defined operator that [e] applies, with the arguments of
+   [e] substituted, or [None] if [e] is not such an application. Constness
+   is computed afresh: the body was marked with its parameters taken as
+   constants, and substituting [[]p] for one must not make it constant. *)
+let unfold cx e =
+  let defn n = match (E_t.get_val_from_id cx n).core with
+    | Defn ({core = Operator (_, body)}, _, _, _) ->
+        Some (E_subst.app_expr (E_subst.shift n) body)
+    | _ -> None
+  in
+  let unfolded = match e.core with
+    | Ix n ->
+        begin match defn n with
+        | Some ({core = Lambda _}) | None -> None
+        | Some body -> Some body
+        end
+    | Apply ({core = Ix n}, args) ->
+        begin match defn n with
+        | Some ({core = Lambda (vs, _)} as op)
+            when List.length vs = List.length args ->
+            Some (E_subst.normalize ~cx op args @@ e)
+        | _ -> None
+        end
+    | _ -> None
+  in
+  Option.map (constness#expr ((), cx)) unfolded
+
+
+(* The number of definitions that one classification may still unfold. A
+   definition that uses a parameter twice doubles the work at each level, so
+   without a bound a short chain of such definitions takes exponential time;
+   past the bound, a formula is conservatively not closed. *)
+let unfold_budget = 1000
+
 let visitor = object (self : 'self)
   inherit [bool ref * bool] iter as super
+
+  val mutable unfolds = 0
+  method reset = unfolds <- unfold_budget
 
   method expr ((closure, is_box), cx as scx) oe =
     if (!closure = false) then ()
@@ -98,11 +139,21 @@ let visitor = object (self : 'self)
         let f e = let () = self#expr ((cls, is_box), cx) e in
         !cls in
         closure := (List.for_all f ls)
-    (* any other application, such as an equality, a set membership or a
-       defined operator, need not keep its value over time even when its
-       arguments are closed, so it is closed only if its value is constant *)
-    | Apply _ ->
-        if not (value_constant oe) then closure := false
+    (* a defined operator is classified by its body, with the arguments
+       substituted, whether or not the definition is hidden: [Id([]p)] with
+       [Id(P) == P] is closed like [[]p], and [Not([]p)] with
+       [Not(b) == ~b] is not, like [~[]p]. Any other application, such as an
+       equality or a set membership, need not keep its value over time even
+       when its arguments are closed, so it is closed only if its value is
+       constant. *)
+    | Ix _ | Apply _ ->
+        begin match unfold cx oe with
+        | Some _ when unfolds = 0 -> closure := false
+        | Some e ->
+            unfolds <- unfolds - 1;
+            self#expr scx e
+        | None -> if not (value_constant oe) then closure := false
+        end
     (* unexpended temporal operators *)
     | f ->
         closure := false
@@ -110,11 +161,13 @@ end
 
 let box_closure cx e =
   let good = ref true in
+  visitor#reset ;
   visitor#expr ((good,true), cx) e ;
   !good
 
 let diamond_closure cx e =
   let good = ref true in
+  visitor#reset ;
   visitor#expr ((good,false), cx) e ;
   !good
 
