@@ -63,13 +63,11 @@ let coalesce_operator cx op args =
         | Operator (nm, _) -> nm
         | _ -> failwith "expected operator" in
     let star e = Opaque "*" @@ e in
-    let leibniz_actuals = Expr.SubstOp.operator_args_leibniz cx op args in
     let args =
         let map_fun (id, arg) =
         if (
                 ((Expr.Levels.get_level arg) = 0)
-                || (leibniz_actuals
-                    && Expr.SubstOp.get_substitutive_arg op (id - 1))) then
+                || Expr.SubstOp.substitutive_in cx op args (id - 1)) then
             star arg
         else
             arg in
@@ -336,16 +334,13 @@ let coalesce_modal_visitor = object (self)
             begin match hyp.core with
             (* user defined operators *)
             | Defn ({core = Operator _} as op, _, _, _) ->
-                let leibniz_actuals =
-                    Expr.SubstOp.operator_args_leibniz cx op args in
                 let not_to_coalesce =
                     let f (id, arg) =
                         let arg = Expr.Levels.compute_level cx arg in
                         if (
                                 ((Expr.Levels.get_level arg) = 0)
-                                || (leibniz_actuals
-                                    && Expr.SubstOp.get_substitutive_arg
-                                        op (id - 1))) then
+                                || Expr.SubstOp.substitutive_in
+                                        cx op args (id - 1)) then
                             true
                         else false
                         in

@@ -54,4 +54,40 @@ THEOREM BuiltinOperator == ASSUME x = {1}, U(x, {2}) = {1, 2}
                            PROVE  U({1}, {2}) = {1, 2}
 <1> HIDE DEF U, Fold
 <1> QED OBVIOUS
+(* An argument is substitutive when the operator parameters it flows       *)
+(* through are Leibniz, whatever the other operator arguments are.         *)
+T(y) == [](x = y)
+L(y) == y + 1 = 2
+
+Keep(F(_), a) == F(0) /\ a = 1
+
+THEOREM IndependentArgument == ASSUME x = 1, Keep(T, x) PROVE Keep(T, 1)
+<1> HIDE DEF Keep, T
+<1> QED OBVIOUS
+
+Mix(F(_), G(_), a) == Ap(G, a) /\ F(0)
+
+THEOREM OtherOperatorParameter == ASSUME x = 1, Mix(T, L, x) PROVE Mix(T, L, 1)
+<1> HIDE DEF Mix, Ap, T, L
+<1> QED OBVIOUS
+
+KeepLet(F(_), a) == LET In(b) == b = 1 IN F(0) /\ In(a)
+
+THEOREM IndependentLet == ASSUME x = 1, KeepLet(T, x) PROVE KeepLet(T, 1)
+<1> HIDE DEF KeepLet, T
+<1> QED OBVIOUS
+
+(* A LET or LAMBDA that applies an operator parameter is Leibniz when the  *)
+(* operator passed for that parameter is.                                   *)
+OuterLet(F(_), a) == LET In(b) == F(b) IN Ap(In, a)
+
+THEOREM LeibnizLet == ASSUME x = 1, OuterLet(L, x) PROVE OuterLet(L, 1)
+<1> HIDE DEF OuterLet, Ap, L
+<1> QED OBVIOUS
+
+WrapLambda(F(_), a) == Ap(LAMBDA y : F(y), a)
+
+THEOREM LeibnizWrappedLambda == ASSUME x = 1, WrapLambda(L, x) PROVE WrapLambda(L, 1)
+<1> HIDE DEF WrapLambda, Ap, L
+<1> QED OBVIOUS
 ====

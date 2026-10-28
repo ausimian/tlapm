@@ -17,6 +17,23 @@ let get_substitutive_arg x n =
     Array.get arr n
 
 
+(* The operator parameters that an argument of a definition flows through.
+   An argument position of a definition is substitutive only if the operators
+   passed for these are Leibniz (substitutive in all of their own arguments):
+   `Keep(F(_), a) == F(0) /\ a = 1` is substitutive in `a` whatever `F` is,
+   but `Ap(F(_), a) == F(a)` is substitutive in `a` only for a Leibniz `F`.
+   A dependency is either on an operator parameter of the definition itself,
+   given by its position in the substitutivity array, or on an operator
+   parameter of an enclosing definition, as for a `LAMBDA` passed on inside
+   it, given by its position in the context counted from the bottom. *)
+type leibniz_dep =
+    | Param of int
+    | Outer of int
+
+let leibniz_deps: leibniz_dep list array pfuncs =
+    Property.make "Expr.Substitutive.leibniz_deps"
+
+
 let make_lambda_hyps params =
     let hyps = List.map
         (fun (v, shp) ->
@@ -25,91 +42,128 @@ let make_lambda_hyps params =
     hyps
 
 
-(* Set to `operator_args_leibniz` below, which needs this class. *)
-let operator_args_leibniz_ref :
-        (formals_leibniz:bool -> ctx -> defn -> expr list -> bool) ref =
-    ref (fun ~formals_leibniz:_ _ _ _ -> false)
+(* The position of `Ix n` in `cx`, counted from the bottom. *)
+let position cx n = Deque.size cx - n
+
+
+(* Set to `required_leibniz` below, which needs this class. *)
+let required_leibniz_ref :
+        (formals_leibniz:bool -> ctx -> defn -> expr list -> int
+            -> int list option) ref =
+    ref (fun ~formals_leibniz:_ _ _ _ _ -> None)
+
+
+(* The state of the traversal that computes the substitutivity of one
+   parameter: the de Bruijn index of the parameter, whether the current
+   subexpression is in substitutive scope, the operator parameters (as
+   context positions) that the current subexpression flows through, whether
+   every occurrence so far is in substitutive scope, and the operator
+   parameters that the occurrences so far flow through. *)
+type state = {
+    index: int;
+    scope: bool;
+    through: int list;
+    subst: bool ref;
+    deps: int list ref;
+}
 
 
 class compute_substitutivity_array = object (self: 'self)
-    inherit [bool * int * bool ref] E_visit.iter as super
+    inherit [state] E_visit.iter as super
 
     method compute cx e =
         match e.core with
             | Lambda (params, expr) ->
                 let hyps = make_lambda_hyps params in
-                let cx = Deque.append_list cx hyps in
                 let n = List.length params in
+                let outer = Deque.size cx in
+                let cx = Deque.append_list cx hyps in
                 let f i =
-                    let r = ref true in
-                    let s = (true, i + 1, r) in
-                    self#expr (s, cx) expr;
-                    !r in
+                    let st = {index = i + 1; scope = true; through = [];
+                              subst = ref true; deps = ref []} in
+                    self#expr (st, cx) expr;
+                    let to_dep p =
+                        if p >= outer then Param (Deque.size cx - 1 - p)
+                        else Outer p in
+                    (!(st.subst), List.map to_dep (Stdlib.List.sort_uniq compare !(st.deps)))
+                in
                 assert (n > 0);
-                Array.init n f
+                let res = Array.init n f in
+                (Array.map fst res, Array.map snd res)
             | _ ->
-                Array.make 0 true
+                (Array.make 0 true, Array.make 0 [])
 
-    method expr (((scope, index, r), cx) as scx) e =
+    method expr ((st, cx) as scx) e =
         match e.core with
-        | Ix n when (n = index) && (scope = false) ->
-            r := false
+        | Ix n when n = st.index ->
+            if st.scope then st.deps := st.through @ !(st.deps)
+            else st.subst := false
         | Lambda (params, expr) ->
             let hyps = make_lambda_hyps params in
             let cx = Deque.append_list cx hyps in
-            let index = index + List.length params in
-            let s = (scope, index, r) in
-            self#expr (s, cx) expr
+            let st = {st with index = st.index + List.length params} in
+            self#expr (st, cx) expr
         | Apply ({core=Internal (Builtin.Prime | StrongPrime
                 | Box _ | Diamond | ENABLED | UNCHANGED)},
                 [expr]) ->
-            let scope = false in
-            let s = (scope, index, r) in
-            self#expr (s, cx) expr
+            self#expr ({st with scope = false}, cx) expr
         | Sub (_, e1, e2)
         | Tsub (_, e1, e2)
         | Fair (_, e1, e2)
         | Apply ({core=Internal (Builtin.Leadsto | Actplus | Cdot)},
                 [e1; e2]) ->
-            let scope = false in
-            let s = (scope, index, r) in
-            self#expr (s, cx) e1;
-            self#expr (s, cx) e2
-        | Apply ({core=Ix n}, args) ->
+            let st = {st with scope = false} in
+            self#expr (st, cx) e1;
+            self#expr (st, cx) e2
+        | Apply ({core = Lambda (params, _)} as op, args)
+                when List.length params = List.length args ->
+            (* a LAMBDA applied directly, as in `(LAMBDA y : F(y))(a)`:
+            the arguments flow wherever the body takes the formals *)
+            self#expr scx (E_subst.normalize ~cx op args @@ e)
+        | Apply ({core=Ix n} as op_ix, args) ->
             let hyp = E_t.get_val_from_id cx n in
             begin match hyp.core with
             | Defn ({core = Operator _} as op, _, _, _) ->
                 (* An argument is in substitutive scope only if the
-                enclosing scope is, the operator's actuals are Leibniz, and
-                the operator is substitutive in that position. The array is
-                indexed from the last parameter, as in `indexed_args`.
-
-                The array being computed is conditional on the operator
-                parameters of the definition being Leibniz, since each
-                application of the definition checks its actuals; so those
-                parameters count as Leibniz here. *)
+                enclosing scope is, the operator is substitutive in that
+                position, and the operators passed for the parameters that
+                the position flows through are Leibniz. Those operators may
+                be Leibniz only if operator parameters around them are, so
+                the argument flows through these as well. The array is
+                indexed from the last parameter, as in `indexed_args`. *)
                 let n_args = List.length args in
-                let leibniz = !operator_args_leibniz_ref
-                    ~formals_leibniz:true cx op args in
                 List.iteri
                     (fun i arg ->
-                        let scope = scope && leibniz
-                            && get_substitutive_arg op (n_args - 1 - i) in
-                        let s = (scope, index, r) in
-                        self#expr (s, cx) arg)
+                        let k = n_args - 1 - i in
+                        let st =
+                            match !required_leibniz_ref
+                                    ~formals_leibniz:true cx op args k with
+                            | Some through when get_substitutive_arg op k ->
+                                {st with through = through @ st.through}
+                            | _ -> {st with scope = false}
+                        in
+                        self#expr (st, cx) arg)
                     args
+            | Fresh (_, Shape_op _, Unknown, _) ->
+                (* an operator parameter of this or an enclosing definition,
+                which keeps its arguments in substitutive scope if the
+                operator passed for it is Leibniz; the same holds for the
+                parameter itself, as an application of it compares the
+                operators passed for it *)
+                let st = {st with through = position cx n :: st.through} in
+                self#expr (st, cx) op_ix;
+                List.iter (fun arg -> self#expr (st, cx) arg) args
             | Fresh (_, Shape_op _, (State | Action | Temporal), _) ->
                 (* A declared operator of non-constant level may prime its
                 arguments or apply ENABLED or a temporal operator to them,
                 so they are not in substitutive scope. *)
-                let s = (false, index, r) in
-                List.iter (fun arg -> self#expr (s, cx) arg) args
+                let st = {st with scope = false} in
+                List.iter (fun arg -> self#expr (st, cx) arg) args
             | _ -> super#expr scx e
             end
         | Tquant (_, ls, _) ->
-            let index = index + (List.length ls) in
-            let s = (scope, index, r) in
-            super#expr (s, cx) e
+            let st = {st with index = st.index + List.length ls} in
+            super#expr (st, cx) e
         | Choose (v, optdom, expr) ->
             let bound = match optdom with
                 | None -> Unbounded
@@ -118,33 +172,23 @@ class compute_substitutivity_array = object (self: 'self)
                     Bounded (dom, Visible)
                 in
             let hyp = Fresh (v, Shape_expr, Constant, bound) @@ v in
-            let index = index + 1 in
             let cx = Deque.snoc cx hyp in
-            let s = (scope, index, r) in
-            let scx = (s, cx) in
-            self#expr scx expr
+            self#expr ({st with index = st.index + 1}, cx) expr
         | SetSt (v, dom, expr) ->
             self#expr scx dom;
             let bound = Bounded (dom, Visible) in
             let hyp = Fresh (v, Shape_expr, Constant, bound) @@ v in
             let cx = Deque.snoc cx hyp in
-            let index = index + 1 in
-            let s = (scope, index, r) in
-            let scx = (s, cx) in
-            self#expr scx expr
+            self#expr ({st with index = st.index + 1}, cx) expr
         | _ -> super#expr scx e
 
     method defn scx df =
-        let ((scope, index, r), cx) = super#defn scx df in
-        let index = index + 1 in
-        let scx = ((scope, index, r), cx) in
-        scx
+        let (st, cx) = super#defn scx df in
+        ({st with index = st.index + 1}, cx)
 
     method bounds scx bs =
-        let ((scope, index, r), cx) = super#bounds scx bs in
-        let index = index + (List.length bs) in
-        let scx = ((scope, index, r), cx) in
-        scx
+        let (st, cx) = super#bounds scx bs in
+        ({st with index = st.index + List.length bs}, cx)
 
     method instance scx inst =
         assert false  (* `INSTANCE` statements have been expanded *)
@@ -160,7 +204,7 @@ class compute_substitutivity_array = object (self: 'self)
 end
 
 
-let make_array cx e =
+let make_arrays cx e =
     let visitor = new compute_substitutivity_array in
     visitor#compute cx e
 
@@ -168,25 +212,43 @@ let make_array cx e =
 let all_true arr = Array.for_all (fun b -> b) arr
 
 
-let is_leibniz_operator ~formals_leibniz cx arg =
+(* The operator parameters, as context positions, that an operator passed
+   as an argument must be Leibniz for it to be Leibniz, or `None` if it may
+   not be Leibniz. *)
+let outer_deps deps =
+    let outer = Stdlib.List.concat_map
+        (List.map (function Outer p -> Some p | Param _ -> None))
+        (Array.to_list deps) in
+    if List.mem None outer then None
+    else Some (Stdlib.List.sort_uniq compare (Stdlib.List.filter_map Fun.id outer))
+
+
+let leibniz_operator ~formals_leibniz cx arg =
     (* Whether `arg`, passed as an operator argument, is substitutive in all
-    of its own arguments. A `LAMBDA` is if no formal occurs under a prime or
-    a modal operator; a defined operator is if it has no operator parameters
-    and its substitutivity array says so; a declared operator is only if it is `CONSTANT`, or, when
-    `formals_leibniz` holds, an operator parameter of the definition being
-    analyzed; a built-in operator is unless it is a prime, `ENABLED`,
-    `UNCHANGED`, `\cdot` or a temporal operator. Anything else is treated
-    as not Leibniz.
+    of its own arguments: `Some ps` if it is when the operator parameters at
+    the context positions `ps` are, and `None` if it may not be. A `LAMBDA`
+    is if no formal occurs under a prime or a modal operator; a defined
+    operator is if it has no operator parameters and its substitutivity
+    array says so; a declared operator is if it is `CONSTANT`; an operator
+    parameter is if the operator passed for it is; a built-in operator is
+    unless it is a prime, `ENABLED`, `UNCHANGED`, `\cdot` or a temporal
+    operator. Anything else is treated as not Leibniz. Without
+    `formals_leibniz`, nothing that depends on operator parameters is.
     *)
+    let conditional ps =
+        if ps = [] || formals_leibniz then Some ps else None in
     match arg.core with
-    | Lambda _ -> all_true (make_array cx arg)
+    | Lambda _ ->
+        let (arr, deps) = make_arrays cx arg in
+        if all_true arr then Stdlib.Option.bind (outer_deps deps) conditional
+        else None
     | Internal (Builtin.Prime | StrongPrime | ENABLED | Cdot | UNCHANGED
-            | Box _ | Diamond | Leadsto | Actplus) -> false
-    | Internal _ -> true
+            | Box _ | Diamond | Leadsto | Actplus) -> None
+    | Internal _ -> Some []
     | Ix n -> begin
         match (E_t.get_val_from_id cx n).core with
-        | Fresh (_, Shape_op _, Constant, _) -> true
-        | Fresh (_, Shape_op _, Unknown, _) -> formals_leibniz
+        | Fresh (_, Shape_op _, Constant, _) -> Some []
+        | Fresh (_, Shape_op _, Unknown, _) -> conditional [position cx n]
         | Defn ({core = Operator (_, body)} as op, _, _, _) ->
             (* the array of a definition with operator parameters assumes
                that its own operator arguments are Leibniz, which nothing
@@ -200,32 +262,58 @@ let is_leibniz_operator ~formals_leibniz cx arg =
                     params
               | _ -> false
             in
-            not higher_order
-            && has_substitutive op && all_true (get_substitutive op)
-        | _ -> false
+            if higher_order || not (has_substitutive op)
+                    || not (all_true (get_substitutive op)) then None
+            else if not (Property.has op leibniz_deps) then Some []
+            else Stdlib.Option.bind
+                (outer_deps (Property.get op leibniz_deps)) conditional
+        | _ -> None
         end
-    | _ -> false
+    | _ -> None
 
 
-let operator_args_leibniz ?(formals_leibniz = false) cx op args =
-    (* Whether every operator argument in the application of the defined
-    operator `op` to `args` is Leibniz. The substitutivity array of a
-    definition such as `Ap(F(_), a) == F(a)` is computed as if `F` were
-    Leibniz, so it holds for an application only when this does: with
-    `LAMBDA y : [](x = y)` for `F`, `Ap(F, x)` is not substitutive in `x`.
+let required_leibniz ~formals_leibniz cx op args k =
+    (* For the application of the defined operator `op` to `args`, the
+    operator parameters, as context positions, that must be Leibniz for the
+    argument at array position `k` to be substitutive, given the
+    substitutivity array of `op`; `None` if it may not be substitutive.
+    Without dependency information, the position is taken to flow through
+    every operator parameter of `op`.
     *)
     match op.core with
     | Operator (_, {core = Lambda (params, _)})
             when List.length params = List.length args ->
-        List.for_all2
-            (fun (_, shp) arg -> match shp with
-                | Shape_op _ -> is_leibniz_operator ~formals_leibniz cx arg
-                | Shape_expr -> true)
-            params args
-    | _ -> true
+        let n = List.length args in
+        let deps =
+            if Property.has op leibniz_deps then
+                (Property.get op leibniz_deps).(k)
+            else
+                List.concat (List.mapi
+                    (fun i (_, shp) -> match shp with
+                        | Shape_op _ -> [Param (n - 1 - i)]
+                        | Shape_expr -> [])
+                    params)
+        in
+        let need = function
+            | Param m ->
+                leibniz_operator ~formals_leibniz cx (List.nth args (n - 1 - m))
+            | Outer p ->
+                if formals_leibniz && p < Deque.size cx then Some [p] else None
+        in
+        List.fold_left
+            (fun acc dep -> match acc, need dep with
+                | Some ps, Some qs -> Some (qs @ ps)
+                | _ -> None)
+            (Some []) deps
+    | _ -> Some []
 
-let () = operator_args_leibniz_ref :=
-    fun ~formals_leibniz -> operator_args_leibniz ~formals_leibniz
+let () = required_leibniz_ref :=
+    fun ~formals_leibniz -> required_leibniz ~formals_leibniz
+
+
+let substitutive_in cx op args k =
+    get_substitutive_arg op k
+    && Stdlib.Option.is_some (required_leibniz ~formals_leibniz:false cx op args k)
 
 
 let shape_to_arity shp =
@@ -328,9 +416,10 @@ class substitutive_op_visitor = object (self: 'self)
         match h.core with
         | Defn ({core=Operator (name, expr)} as op, wd, visibility, e) ->
             let expr = self#expr scx expr in
-            let ar = make_array (snd scx) expr in
+            let (ar, deps) = make_arrays (snd scx) expr in
             let op = Operator (name, expr) @@ op in
             let op = assign op substitutive_arg ar in
+            let op = assign op leibniz_deps deps in
             let h = Defn (op, wd, visibility, e) @@ h in
             (E_visit.adj scx h, h)
         | _ -> super#hyp scx h
