@@ -33,15 +33,20 @@ let localize_axioms niargs body =
         | Axiom (nm, ax) ->
             (* The axiom applied to the instance parameters, as a hypothesis
                inside the LAMBDA of a parametric theorem that follows it
-               after [n] hypotheses (see [insert_ax]). *)
-            let param_ax n =
+               after [n] hypotheses (see [insert_ax]). The LAMBDA has
+               [len >= niargs] parameters: the instance parameters come
+               first, so they are [Ix len] .. [Ix (len - niargs + 1)]; any
+               others belong to an instance nested in the instantiated
+               module. *)
+            let param_ax n len =
               match nm, ax.core with
               | Some _, _ ->
                   let iargs =
-                    List.init niargs (fun k -> Ix (niargs - k) @@ mu) in
-                  Apply (Ix (2 + n + niargs) @@ mu, iargs) @@ mu
+                    List.init niargs (fun k -> Ix (len - k) @@ mu) in
+                  Apply (Ix (2 + n + len) @@ mu, iargs) @@ mu
               | None, Lambda (_, b) ->
-                  app_expr (bumpn niargs (shift (1 + n))) b
+                  app_expr (shift (len - niargs))
+                    (app_expr (bumpn niargs (shift (1 + n))) b)
               | None, _ ->
                   Errors.bug ~at:mu "Module.Elab.localize_axioms"
             in
@@ -66,9 +71,11 @@ let localize_axioms niargs body =
                   | Theorem (nm, ({context; active = {core = Lambda (ivs, b)}}
                                   as sq), naxs, prf, prf_orig, summ)
                     when niargs > 0 && Deque.null context
-                         && List.length ivs = niargs ->
+                         && List.length ivs >= niargs ->
                       (* A theorem of a parametric instance is
-                         [LAMBDA x: Thm(x)], and the axiom is a LAMBDA too.
+                         [LAMBDA x: Thm(x)], or [LAMBDA x, y: Thm(x, y)] for
+                         a theorem of an instance [J(y)] nested in the
+                         instantiated module, and the axiom is a LAMBDA too.
                          As a hypothesis of the theorem the axiom would be
                          an unapplied operator, so put it inside the
                          LAMBDA, applied to the parameters:
@@ -82,7 +89,9 @@ let localize_axioms niargs body =
                         | _ -> { context = Deque.empty; active = b }
                       in
                       let inner = app_sequent (shift 1) inner in
-                      let hx = Fact (param_ax n, Visible, Always) @@ mu in
+                      let hx =
+                        Fact (param_ax n (List.length ivs), Visible, Always)
+                        @@ mu in
                       let inner =
                         { inner with context = Deque.cons hx inner.context }
                       in
@@ -506,15 +515,18 @@ let rec localize body body_len iname niargs iargs not_complained inst local =
             | _ -> {context = Deque.empty ; active = e}
           in
           let prf = Omitted (Elsewhere (Util.get_locus mu)) @@ mu in
+          (* A parametric theorem is a LAMBDA over the instance arguments,
+             with the whole sequent inside it. That includes the [naxs]
+             hypotheses for axioms of a module instantiated further in, so
+             none are left outside: exposing the theorem must drop nothing
+             (see [M_t.hyps_of_modunit]), and a citation carries them. *)
+          let naxs = if niargs > 0 then 0 else naxs in
           let mu = Theorem (nm, sq, naxs, prf, prf_orig, summ) @@ mu in
-          (* A parametric theorem is a LAMBDA over the instance arguments;
-             mark it so that a citation [I(e)!Thm] is accepted as an instance
-             of a proved theorem (see [Proof.Gen.gen_step]), unless it
-             already depends on axioms of a module instantiated further in
-             (naxs > 0). *)
+          (* Mark a parametric theorem so that a citation [I(e)!Thm] is
+             accepted as an instance of a proved theorem (see
+             [Proof.Gen.gen_step]). *)
           let mu =
-            if niargs > 0 && naxs = 0 then assign mu Expr.T.param_theorem ()
-            else mu
+            if niargs > 0 then assign mu Expr.T.param_theorem () else mu
           in
           (* a named theorem occupies two hypotheses (see [M_t.hyp_size]) *)
           localize (mu :: body) (body_len + hyp_size mu) iname niargs iargs
@@ -1379,8 +1391,9 @@ let%test_module _ = (module struct
 
   (* Localize, through the parametric instance [I(x) == INSTANCE M], the
      theorem [THEOREM T == ASSUME TRUE PROVE TRUE] that already depends on
-     [naxs] axioms, and return whether it is marked as citable. *)
-  let marked naxs =
+     [naxs] axioms, and return whether it is marked as citable, whether its
+     [naxs] is now 0, and whether its hypothesis is inside its LAMBDA. *)
+  let localized naxs =
     let inst = { inst_args = ["x" @@ hint]; inst_mod = "M"; inst_sub = [] }
       @@ hint in
     let sq = {
@@ -1394,14 +1407,21 @@ let%test_module _ = (module struct
     let mu = Theorem (Some ("T" @@ hint), sq, naxs, prf, prf, summ) @@ hint in
     match localize [] 0 ("I" @@ hint) 1 [Ix 1 @@ hint] (ref true) inst Export
             [mu] with
-    | [mu] -> Expr.T.is_param_theorem mu
+    | [{core = Theorem (_, sq, naxs, _, _, _)} as mu] ->
+        let inside = match sq.active.core with
+          | Lambda (_, {core = Sequent isq}) -> Deque.size isq.context = 1
+          | _ -> false
+        in
+        Expr.T.is_param_theorem mu && naxs = 0 && Deque.null sq.context
+        && inside
     | _ -> assert false
 
   (* A theorem of a module that instantiates a module with an AXIOM
-     depends on the axiom (naxs > 0), and the hypothesis that records this
-     is lost when the theorem is exposed, so a parametric instance must not
-     mark it as citable. A parametric instance of such a module fails
-     today with "naxs > #cx", so this calls [localize] directly. *)
-  let%test "axiom-dependent theorem of a nested instance is not citable" =
-    marked 0 && not (marked 1)
+     depends on the axiom (naxs > 0). Exposing a theorem drops its first
+     naxs hypotheses, but a parametric instance puts the whole sequent,
+     those hypotheses included, inside the LAMBDA. So naxs must become 0,
+     or exposure fails with "naxs > #cx", and the theorem can be marked as
+     citable: a citation carries the hypotheses. *)
+  let%test "axiom-dependent theorem of a nested instance keeps its axioms" =
+    localized 0 && localized 1
 end)
