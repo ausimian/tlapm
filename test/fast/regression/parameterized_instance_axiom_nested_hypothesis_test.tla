@@ -10,3 +10,4 @@ THEOREM ASSUME NEW x \in Int, NEW y \in Int, x < y, y > 0 PROVE K(x, y)
 BY I(x, y)!J!T DEF I!J!D
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed

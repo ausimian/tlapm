@@ -10,3 +10,4 @@ THEOREM ASSUME NEW x \in Int, NEW y \in Int PROVE x < y
 BY I(x, y)!Lt
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed

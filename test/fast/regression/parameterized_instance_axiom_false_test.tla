@@ -8,3 +8,4 @@ THEOREM 1 = 0
 BY I(1)!T
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed

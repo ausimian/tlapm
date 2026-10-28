@@ -10,3 +10,4 @@ THEOREM ASSUME NEW x \in Int, NEW y \in Int, y < x PROVE H(x, y)
 BY I(x, y)!T
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed

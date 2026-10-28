@@ -15,3 +15,4 @@ THEOREM H(c, d)
 BY J!T
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed

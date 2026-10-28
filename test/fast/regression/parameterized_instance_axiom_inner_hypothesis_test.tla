@@ -11,3 +11,4 @@ THEOREM ASSUME NEW x \in Int, NEW y \in Int, NEW z \in Int, y < z, y > 0, z > 0
 BY I(x)!J(y, z)!T DEF I!J!D
 ====================================
 stderr: status:failed
+stderr: 1/2 obligations failed
